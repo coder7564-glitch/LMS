@@ -339,7 +339,9 @@ def render_admin_dashboard() -> None:
     st.title("Administrator Dashboard")
     st.caption("Manage student records and view program information.")
 
-    overview_tab, add_tab, manage_tab = st.tabs(["Overview", "Add Student", "Manage Students"])
+    overview_tab, add_tab, manage_tab, notes_tab = st.tabs(
+        ["Overview", "Add Student", "Manage Students", "Academic Notes"]
+    )
 
     with overview_tab:
         students = fetch_students()
@@ -435,62 +437,85 @@ def render_admin_dashboard() -> None:
                         else:
                             st.warning(f"Student '{selected_username}' has been removed.")
                             st.rerun()
-                st.markdown("---")
-                st.subheader("Academic Notes")
-                note_title = st.text_input(
-                    "Note Title",
-                    value="",
-                    placeholder="e.g. Midterm Review Packet",
-                    key=f"note_title_{selected_username}",
-                )
-                uploaded_note = st.file_uploader(
-                    "Upload Note File",
-                    type=["pdf", "doc", "docx", "txt", "png", "jpg", "jpeg"],
-                    key=f"note_uploader_{selected_username}",
-                )
-                if st.button("Upload Academic Note", key=f"upload_note_btn_{selected_username}"):
-                    if not uploaded_note:
-                        st.error("Please choose a file before uploading.")
-                    else:
-                        title_to_use = note_title.strip() or uploaded_note.name
-                        error = add_student_note(selected_username, title_to_use, uploaded_note)
-                        if error:
-                            st.error(f"Could not upload note: {error}")
-                        else:
-                            st.success("Academic note uploaded successfully.")
-                            st.rerun()
-
-                attachments = fetch_student_notes(selected_username)
-                if attachments:
-                    st.write("#### Existing Notes")
-                    for note in attachments:
-                        col_info, col_actions = st.columns([4, 1])
-                        with col_info:
-                            st.write(f"**{note['title']}**")
-                            st.caption(f"Uploaded: {note['uploaded_at']}")
-                        with col_actions:
-                            st.download_button(
-                                "Download",
-                                data=note["data"],
-                                file_name=note["file_name"],
-                                mime=note["mime_type"],
-                                key=f"download_note_{note['id']}",
-                            )
-                            if st.button(
-                                "Delete",
-                                key=f"delete_note_{note['id']}",
-                                help="Remove this note",
-                            ):
-                                error = delete_student_note(note["id"])
-                                if error:
-                                    st.error(f"Could not delete note: {error}")
-                                else:
-                                    st.warning("Note deleted.")
-                                    st.rerun()
-                else:
-                    st.info("No uploaded notes for this student yet.")
         else:
             st.info("No students available to edit or delete.")
+
+    with notes_tab:
+        st.subheader("Academic Notes Library")
+        students = fetch_students()
+        if not students:
+            st.info("Add students first to manage their academic notes.")
+        else:
+            usernames = [student["username"] for student in students]
+            selected_username = st.selectbox(
+                "Choose a student",
+                usernames,
+                key="notes_student_select",
+            )
+            if selected_username:
+                selected_student = fetch_student(selected_username)
+                if not selected_student:
+                    st.error("Unable to load that student record.")
+                else:
+                    st.markdown(
+                        f"**{selected_student['full_name']}** &middot; {selected_student['program']}",
+                        unsafe_allow_html=True,
+                    )
+
+                    note_title = st.text_input(
+                        "Note Title",
+                        value="",
+                        placeholder="e.g. Midterm Review Packet",
+                        key=f"note_title_{selected_username}",
+                    )
+                    uploaded_note = st.file_uploader(
+                        "Upload Note File",
+                        type=["pdf", "doc", "docx", "txt", "png", "jpg", "jpeg"],
+                        key=f"note_uploader_{selected_username}",
+                    )
+                    if st.button(
+                        "Upload Academic Note", key=f"upload_note_btn_{selected_username}", type="primary"
+                    ):
+                        if not uploaded_note:
+                            st.error("Please choose a file before uploading.")
+                        else:
+                            title_to_use = note_title.strip() or uploaded_note.name
+                            error = add_student_note(selected_username, title_to_use, uploaded_note)
+                            if error:
+                                st.error(f"Could not upload note: {error}")
+                            else:
+                                st.success("Academic note uploaded successfully.")
+                                st.rerun()
+
+                    attachments = fetch_student_notes(selected_username)
+                    if attachments:
+                        st.write("#### Existing Notes")
+                        for note in attachments:
+                            col_info, col_actions = st.columns([4, 1])
+                            with col_info:
+                                st.write(f"**{note['title']}**")
+                                st.caption(f"Uploaded: {note['uploaded_at']}")
+                            with col_actions:
+                                st.download_button(
+                                    "Download",
+                                    data=note["data"],
+                                    file_name=note["file_name"],
+                                    mime=note["mime_type"],
+                                    key=f"download_note_{note['id']}",
+                                )
+                                if st.button(
+                                    "Delete",
+                                    key=f"delete_note_{note['id']}",
+                                    help="Remove this note",
+                                ):
+                                    error = delete_student_note(note["id"])
+                                    if error:
+                                        st.error(f"Could not delete note: {error}")
+                                    else:
+                                        st.warning("Note deleted.")
+                                        st.rerun()
+                    else:
+                        st.info("No uploaded notes for this student yet.")
 
     st.divider()
     if st.button("Log Out"):
