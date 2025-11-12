@@ -79,6 +79,20 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS student_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_username TEXT NOT NULL,
+                title TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                data BLOB NOT NULL,
+                uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (student_username) REFERENCES students(username) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             INSERT OR IGNORE INTO admins (username, password, full_name)
             VALUES (:username, :password, :full_name)
             """,
@@ -163,6 +177,61 @@ def delete_student(username: str) -> Optional[str]:
     try:
         with conn:
             conn.execute("DELETE FROM students WHERE username = ?", (username,))
+        return None
+    except Exception as exc:  # pragma: no cover - defensive
+        return str(exc)
+
+
+def fetch_student_notes(username: str) -> List[Dict[str, str]]:
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT id, title, file_name, mime_type, data, uploaded_at
+        FROM student_notes
+        WHERE student_username = ?
+        ORDER BY uploaded_at DESC, id DESC
+        """,
+        (username,),
+    ).fetchall()
+    notes: List[Dict[str, str]] = []
+    for row in rows:
+        note_dict = dict(row)
+        note_dict["data"] = bytes(row["data"]) if row["data"] is not None else b""
+        notes.append(note_dict)
+    return notes
+
+
+def add_student_note(username: str, title: str, uploaded_file) -> Optional[str]:
+    file_bytes = uploaded_file.getvalue()
+    if not file_bytes:
+        return "Uploaded file is empty."
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO student_notes (student_username, title, file_name, mime_type, data)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    username,
+                    title,
+                    uploaded_file.name,
+                    uploaded_file.type or "application/octet-stream",
+                    file_bytes,
+                ),
+            )
+        return None
+    except Exception as exc:  # pragma: no cover - defensive
+        return str(exc)
+
+
+def delete_student_note(note_id: int) -> Optional[str]:
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("DELETE FROM student_notes WHERE id = ?", (note_id,))
         return None
     except Exception as exc:  # pragma: no cover - defensive
         return str(exc)
@@ -366,6 +435,60 @@ def render_admin_dashboard() -> None:
                         else:
                             st.warning(f"Student '{selected_username}' has been removed.")
                             st.rerun()
+                st.markdown("---")
+                st.subheader("Academic Notes")
+                note_title = st.text_input(
+                    "Note Title",
+                    value="",
+                    placeholder="e.g. Midterm Review Packet",
+                    key=f"note_title_{selected_username}",
+                )
+                uploaded_note = st.file_uploader(
+                    "Upload Note File",
+                    type=["pdf", "doc", "docx", "txt", "png", "jpg", "jpeg"],
+                    key=f"note_uploader_{selected_username}",
+                )
+                if st.button("Upload Academic Note", key=f"upload_note_btn_{selected_username}"):
+                    if not uploaded_note:
+                        st.error("Please choose a file before uploading.")
+                    else:
+                        title_to_use = note_title.strip() or uploaded_note.name
+                        error = add_student_note(selected_username, title_to_use, uploaded_note)
+                        if error:
+                            st.error(f"Could not upload note: {error}")
+                        else:
+                            st.success("Academic note uploaded successfully.")
+                            st.rerun()
+
+                attachments = fetch_student_notes(selected_username)
+                if attachments:
+                    st.write("#### Existing Notes")
+                    for note in attachments:
+                        col_info, col_actions = st.columns([4, 1])
+                        with col_info:
+                            st.write(f"**{note['title']}**")
+                            st.caption(f"Uploaded: {note['uploaded_at']}")
+                        with col_actions:
+                            st.download_button(
+                                "Download",
+                                data=note["data"],
+                                file_name=note["file_name"],
+                                mime=note["mime_type"],
+                                key=f"download_note_{note['id']}",
+                            )
+                            if st.button(
+                                "Delete",
+                                key=f"delete_note_{note['id']}",
+                                help="Remove this note",
+                            ):
+                                error = delete_student_note(note["id"])
+                                if error:
+                                    st.error(f"Could not delete note: {error}")
+                                else:
+                                    st.warning("Note deleted.")
+                                    st.rerun()
+                else:
+                    st.info("No uploaded notes for this student yet.")
         else:
             st.info("No students available to edit or delete.")
 
@@ -433,6 +556,20 @@ def render_student_dashboard(username: str) -> None:
         st.info(record["notes"])
     else:
         st.write("No notes on file.")
+
+    uploaded_notes = fetch_student_notes(username)
+    if uploaded_notes:
+        st.write("### Uploaded Documents")
+        for note in uploaded_notes:
+            st.download_button(
+                label=f"Download {note['title']}",
+                data=note["data"],
+                file_name=note["file_name"],
+                mime=note["mime_type"],
+                key=f"student_download_{note['id']}",
+            )
+    else:
+        st.write("No additional documents uploaded yet.")
 
     st.divider()
     if st.button("Log Out"):
