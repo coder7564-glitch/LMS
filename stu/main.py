@@ -1,5 +1,7 @@
 from pathlib import Path
 from typing import Dict, List, Optional
+from datetime import datetime, date, timedelta
+import calendar as cal
 
 import pandas as pd
 import streamlit as st
@@ -88,6 +90,19 @@ def init_db() -> None:
                 data BLOB NOT NULL,
                 uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (student_username) REFERENCES students(username) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_username TEXT NOT NULL,
+                attendance_date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                marked_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (student_username) REFERENCES students(username) ON DELETE CASCADE,
+                UNIQUE(student_username, attendance_date)
             )
             """
         )
@@ -237,6 +252,49 @@ def delete_student_note(note_id: int) -> Optional[str]:
         return str(exc)
 
 
+def mark_attendance(username: str, attendance_date: str, status: str) -> Optional[str]:
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO attendance (student_username, attendance_date, status)
+                VALUES (?, ?, ?)
+                """,
+                (username, attendance_date, status),
+            )
+        return None
+    except Exception as exc:  # pragma: no cover - defensive
+        return str(exc)
+
+
+def fetch_attendance(username: str) -> List[Dict[str, str]]:
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT attendance_date, status, marked_at
+        FROM attendance
+        WHERE student_username = ?
+        ORDER BY attendance_date DESC
+        """,
+        (username,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_attendance_status(username: str, attendance_date: str) -> Optional[str]:
+    conn = get_connection()
+    row = conn.execute(
+        """
+        SELECT status
+        FROM attendance
+        WHERE student_username = ? AND attendance_date = ?
+        """,
+        (username, attendance_date),
+    ).fetchone()
+    return row["status"] if row else None
+
+
 def authenticate_admin(username: str, password: str) -> Optional[str]:
     conn = get_connection()
     row = conn.execute(
@@ -347,6 +405,7 @@ def render_admin_dashboard() -> None:
         students = fetch_students()
         if students:
             df = pd.DataFrame(students).set_index("username")
+            df = df.drop(columns=["notes"], errors="ignore")
             st.dataframe(df, use_container_width=True)
         else:
             st.info("No students are registered yet.")
@@ -360,7 +419,6 @@ def render_admin_dashboard() -> None:
             email = st.text_input("Email")
             program = st.text_input("Program")
             phone = st.text_input("Phone Number", placeholder="e.g. (555) 010-0000")
-            notes = st.text_area("Notes", placeholder="Optional academic notes or achievements")
             add_submitted = st.form_submit_button("Add Student")
 
         if add_submitted:
@@ -377,7 +435,7 @@ def render_admin_dashboard() -> None:
                         "email": email or "Not provided",
                         "program": program or "Undeclared",
                         "phone": phone,
-                        "notes": notes.strip(),
+                        "notes": "",
                     }
                 )
                 if error:
@@ -522,19 +580,91 @@ def render_admin_dashboard() -> None:
         logout()
 
 
+def render_attendance_calendar(username: str, year: int, month: int) -> None:
+    """Render a calendar showing attendance for the given month."""
+    # Get attendance records for the month
+    attendance_records = fetch_attendance(username)
+    attendance_dict = {record["attendance_date"]: record["status"] for record in attendance_records}
+    
+    # Create calendar
+    calendar_obj = cal.Calendar()
+    month_days = calendar_obj.monthdayscalendar(year, month)
+    
+    # Month header
+    month_name = cal.month_name[month]
+    st.markdown(f"### 📅 Attendance Calendar - {month_name} {year}")
+    
+    # Day headers
+    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    cols = st.columns(7)
+    for idx, day in enumerate(day_names):
+        with cols[idx]:
+            st.markdown(f"**{day}**")
+    
+    # Calendar days
+    for week in month_days:
+        cols = st.columns(7)
+        for idx, day in enumerate(week):
+            with cols[idx]:
+                if day == 0:
+                    st.markdown("<div style='height: 60px;'></div>", unsafe_allow_html=True)
+                else:
+                    date_str = f"{year}-{month:02d}-{day:02d}"
+                    status = attendance_dict.get(date_str)
+                    
+                    # Determine color based on status
+                    if status == "present":
+                        color = "#22c55e"  # Green
+                        icon = "✓"
+                        label = "P"
+                    elif status == "absent":
+                        color = "#ef4444"  # Red
+                        icon = "✗"
+                        label = "A"
+                    else:
+                        color = "#e5e7eb"  # Gray
+                        icon = ""
+                        label = ""
+                    
+                    # Render day box
+                    st.markdown(
+                        f"""
+                        <div style='
+                            background-color: {color};
+                            border-radius: 8px;
+                            padding: 10px;
+                            text-align: center;
+                            height: 60px;
+                            display: flex;
+                            flex-direction: column;
+                            justify-content: center;
+                            align-items: center;
+                            color: {"white" if status else "#6b7280"};
+                            font-weight: bold;
+                        '>
+                            <div style='font-size: 16px;'>{day}</div>
+                            <div style='font-size: 12px;'>{label}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+    
+    # Legend
+    st.markdown("---")
+    legend_cols = st.columns(3)
+    with legend_cols[0]:
+        st.markdown("🟢 **Present**")
+    with legend_cols[1]:
+        st.markdown("🔴 **Absent**")
+    with legend_cols[2]:
+        st.markdown("⚪ **Not Marked**")
+
+
 def render_student_dashboard(username: str) -> None:
     record = fetch_student(username)
 
     st.title("Student Dashboard")
-    edit_flag_key = f"edit_contact_{username}"
-    if edit_flag_key not in st.session_state:
-        st.session_state[edit_flag_key] = False
-
-    header_cols = st.columns([6, 1])
-    with header_cols[1]:
-        if st.button("✏️", help="Edit contact details", key=f"edit_contact_btn_{username}"):
-            st.session_state[edit_flag_key] = not st.session_state[edit_flag_key]
-
+    
     if not record:
         st.error("We could not find your student record. Please contact the administrator.")
         if st.button("Log Out"):
@@ -543,58 +673,171 @@ def render_student_dashboard(username: str) -> None:
 
     st.success(f"Welcome, {record['full_name']}!")
 
-    st.subheader("Profile")
-    st.container().markdown(
-        f"""
-        <div class="metric-card">
-            <strong>Program</strong><br>{record['program']}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Create tabs for different sections
+    profile_tab, attendance_tab, notes_tab = st.tabs(["📋 Profile", "📅 Attendance", "📚 Documents"])
 
-    st.write("### Contact")
-    phone_display = (record.get("phone") or "").strip() or "Not provided"
-    st.write(f"**Email:** {record['email']}")
-    st.write(f"**Phone:** {phone_display}")
+    # Profile Tab
+    with profile_tab:
+        edit_flag_key = f"edit_contact_{username}"
+        if edit_flag_key not in st.session_state:
+            st.session_state[edit_flag_key] = False
 
-    if st.session_state[edit_flag_key]:
-        with st.form(f"student_contact_update_{username}"):
-            new_email = st.text_input("Email", value=record["email"])
-            new_phone = st.text_input("Phone Number", value=record.get("phone", ""))
-            save_contact = st.form_submit_button("Save Contact Info")
+        header_cols = st.columns([6, 1])
+        with header_cols[1]:
+            if st.button("✏️", help="Edit contact details", key=f"edit_contact_btn_{username}"):
+                st.session_state[edit_flag_key] = not st.session_state[edit_flag_key]
 
-        if save_contact:
-            updates = {
-                "email": new_email or "Not provided",
-                "phone": new_phone,
-            }
-            error = update_student(username, updates)
-            if error:
-                st.error(f"Could not update contact information: {error}")
+        st.subheader("Profile")
+        st.container().markdown(
+            f"""
+            <div class="metric-card">
+                <strong>Program</strong><br>{record['program']}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.write("### Contact")
+        phone_display = (record.get("phone") or "").strip() or "Not provided"
+        st.write(f"**Email:** {record['email']}")
+        st.write(f"**Phone:** {phone_display}")
+
+        if st.session_state[edit_flag_key]:
+            with st.form(f"student_contact_update_{username}"):
+                new_email = st.text_input("Email", value=record["email"])
+                new_phone = st.text_input("Phone Number", value=record.get("phone", ""))
+                save_contact = st.form_submit_button("Save Contact Info")
+
+            if save_contact:
+                updates = {
+                    "email": new_email or "Not provided",
+                    "phone": new_phone,
+                }
+                error = update_student(username, updates)
+                if error:
+                    st.error(f"Could not update contact information: {error}")
+                else:
+                    st.success("Contact information updated.")
+                    st.rerun()
+
+        st.write("### Academic Notes")
+        if record.get("notes"):
+            st.info(record["notes"])
+        else:
+            st.write("No notes on file.")
+
+    # Attendance Tab
+    with attendance_tab:
+        st.subheader("Mark Your Attendance")
+        
+        # Get today's date
+        today = date.today()
+        today_str = today.strftime("%Y-%m-%d")
+        
+        # Check if already marked today
+        today_status = get_attendance_status(username, today_str)
+        
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        with col1:
+            if st.button("✓ Mark Present", type="primary", use_container_width=True, disabled=today_status is not None):
+                error = mark_attendance(username, today_str, "present")
+                if error:
+                    st.error(f"Could not mark attendance: {error}")
+                else:
+                    st.success("✓ Marked as Present!")
+                    st.rerun()
+        
+        with col2:
+            if st.button("✗ Mark Absent", use_container_width=True, disabled=today_status is not None):
+                error = mark_attendance(username, today_str, "absent")
+                if error:
+                    st.error(f"Could not mark attendance: {error}")
+                else:
+                    st.warning("✗ Marked as Absent!")
+                    st.rerun()
+        
+        with col3:
+            if today_status:
+                status_display = "Present ✓" if today_status == "present" else "Absent ✗"
+                color = "green" if today_status == "present" else "red"
+                st.markdown(
+                    f"<div style='padding: 10px; background-color: {'#d1fae5' if today_status == 'present' else '#fee2e2'}; "
+                    f"border-radius: 8px; text-align: center; font-weight: bold; color: {color};'>"
+                    f"Today's Status: {status_display}</div>",
+                    unsafe_allow_html=True
+                )
             else:
-                st.success("Contact information updated.")
-                st.rerun()
-
-    st.write("### Academic Notes")
-    if record.get("notes"):
-        st.info(record["notes"])
-    else:
-        st.write("No notes on file.")
-
-    uploaded_notes = fetch_student_notes(username)
-    if uploaded_notes:
-        st.write("### Uploaded Documents")
-        for note in uploaded_notes:
-            st.download_button(
-                label=f"Download {note['title']}",
-                data=note["data"],
-                file_name=note["file_name"],
-                mime=note["mime_type"],
-                key=f"student_download_{note['id']}",
+                st.info("You haven't marked attendance for today yet.")
+        
+        st.markdown("---")
+        
+        # Attendance statistics
+        attendance_records = fetch_attendance(username)
+        if attendance_records:
+            present_count = sum(1 for r in attendance_records if r["status"] == "present")
+            absent_count = sum(1 for r in attendance_records if r["status"] == "absent")
+            total_count = len(attendance_records)
+            
+            attendance_percentage = (present_count / total_count * 100) if total_count > 0 else 0
+            
+            stat_cols = st.columns(4)
+            with stat_cols[0]:
+                st.metric("Total Days", total_count)
+            with stat_cols[1]:
+                st.metric("Present", present_count, delta=None)
+            with stat_cols[2]:
+                st.metric("Absent", absent_count, delta=None)
+            with stat_cols[3]:
+                st.metric("Attendance %", f"{attendance_percentage:.1f}%")
+            
+            st.markdown("---")
+        
+        # Calendar view
+        st.subheader("Attendance Calendar")
+        
+        # Month selector
+        cal_cols = st.columns([2, 2, 1])
+        with cal_cols[0]:
+            selected_month = st.selectbox(
+                "Month",
+                range(1, 13),
+                format_func=lambda x: cal.month_name[x],
+                index=today.month - 1,
+                key="attendance_month"
             )
-    else:
-        st.write("No additional documents uploaded yet.")
+        with cal_cols[1]:
+            selected_year = st.selectbox(
+                "Year",
+                range(today.year - 1, today.year + 2),
+                index=1,
+                key="attendance_year"
+            )
+        
+        # Render calendar
+        render_attendance_calendar(username, selected_year, selected_month)
+
+    # Documents Tab
+    with notes_tab:
+        st.subheader("Academic Documents")
+        uploaded_notes = fetch_student_notes(username)
+        if uploaded_notes:
+            for note in uploaded_notes:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.write(f"**{note['title']}**")
+                    st.caption(f"Uploaded: {note['uploaded_at']}")
+                with col2:
+                    st.download_button(
+                        label="Download",
+                        data=note["data"],
+                        file_name=note["file_name"],
+                        mime=note["mime_type"],
+                        key=f"student_download_{note['id']}",
+                        use_container_width=True,
+                    )
+        else:
+            st.info("No documents uploaded yet.")
 
     st.divider()
     if st.button("Log Out"):
