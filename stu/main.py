@@ -1,6 +1,6 @@
 from pathlib import Path
-from typing import Dict, List, Optional
-from datetime import datetime, date, timedelta
+from typing import Dict, List, Optional, Tuple
+from datetime import date
 import calendar as cal
 
 import pandas as pd
@@ -8,50 +8,54 @@ import streamlit as st
 
 DB_PATH = Path("students.db")
 
-DEFAULT_ADMIN = {
-    "username": "admin",
-    "password": "admin123",
-    "full_name": "Administrator",
-}
+DEFAULT_ADMIN = {"username": "admin", "password": "admin123", "full_name": "Administrator"}
 
-DEFAULT_STUDENTS: List[Dict[str, str]] = [
+DEFAULT_STUDENTS = [
     {
-        "username": "sara",
-        "password": "sara2024",
-        "full_name": "Sara Hernandez",
-        "email": "sara.hernandez@example.com",
-        "program": "Computer Science",
-        "phone": "(555) 010-1111",
-        "notes": "Robotics club president.",
+        "username": "sara", "password": "sara2024", "full_name": "Sara Hernandez",
+        "email": "sara.hernandez@example.com", "program": "Computer Science",
+        "phone": "(555) 010-1111", "notes": "Robotics club president.",
     },
     {
-        "username": "dylan",
-        "password": "dylan2024",
-        "full_name": "Dylan Chen",
-        "email": "dylan.chen@example.com",
-        "program": "Mechanical Engineering",
-        "phone": "(555) 010-2222",
-        "notes": "Co-op placement at Horizon Industries.",
+        "username": "dylan", "password": "dylan2024", "full_name": "Dylan Chen",
+        "email": "dylan.chen@example.com", "program": "Mechanical Engineering",
+        "phone": "(555) 010-2222", "notes": "Co-op placement at Horizon Industries.",
     },
     {
-        "username": "lina",
-        "password": "lina2024",
-        "full_name": "Lina Patel",
-        "email": "lina.patel@example.com",
-        "program": "Business Administration",
-        "phone": "(555) 010-3333",
-        "notes": "Dean's list for two consecutive years.",
+        "username": "lina", "password": "lina2024", "full_name": "Lina Patel",
+        "email": "lina.patel@example.com", "program": "Business Administration",
+        "phone": "(555) 010-3333", "notes": "Dean's list for two consecutive years.",
     },
 ]
+
+# Constants for attendance
+ATTENDANCE_COLORS = {
+    "present": {"bg": "#22c55e", "light_bg": "#d1fae5", "label": "P", "icon": "✓"},
+    "absent": {"bg": "#ef4444", "light_bg": "#fee2e2", "label": "A", "icon": "✗"},
+    "unmarked": {"bg": "#e5e7eb", "light_bg": "#f3f4f6", "label": "", "icon": ""}
+}
 
 
 @st.cache_resource(show_spinner=False)
 def get_connection():
     import sqlite3
-
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def safe_db_execute(query: str, params: tuple = (), commit: bool = True) -> Optional[str]:
+    """Execute a database operation safely, returning error message if any."""
+    try:
+        conn = get_connection()
+        if commit:
+            with conn:
+                conn.execute(query, params)
+        else:
+            conn.execute(query, params)
+        return None
+    except Exception as exc:
+        return str(exc)
 
 
 def init_db() -> None:
@@ -155,46 +159,35 @@ def fetch_student(username: str) -> Optional[Dict[str, str]]:
 
 
 def add_student(payload: Dict[str, str]) -> Optional[str]:
-    conn = get_connection()
     try:
+        conn = get_connection()
         with conn:
             conn.execute(
-                """
-                INSERT INTO students (username, password, full_name, email, program, phone, notes)
-                VALUES (:username, :password, :full_name, :email, :program, :phone, :notes)
-                """,
+                "INSERT INTO students (username, password, full_name, email, program, phone, notes) "
+                "VALUES (:username, :password, :full_name, :email, :program, :phone, :notes)",
                 payload,
             )
         return None
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
         return str(exc)
 
 
 def update_student(username: str, updates: Dict[str, str]) -> Optional[str]:
     if not updates:
         return None
-    assignments = ", ".join(f"{key} = :{key}" for key in updates.keys())
-    updates["username"] = username
-    conn = get_connection()
     try:
+        assignments = ", ".join(f"{key} = :{key}" for key in updates)
+        updates["username"] = username
+        conn = get_connection()
         with conn:
-            conn.execute(
-                f"UPDATE students SET {assignments} WHERE username = :username",
-                updates,
-            )
+            conn.execute(f"UPDATE students SET {assignments} WHERE username = :username", updates)
         return None
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
         return str(exc)
 
 
 def delete_student(username: str) -> Optional[str]:
-    conn = get_connection()
-    try:
-        with conn:
-            conn.execute("DELETE FROM students WHERE username = ?", (username,))
-        return None
-    except Exception as exc:  # pragma: no cover - defensive
-        return str(exc)
+    return safe_db_execute("DELETE FROM students WHERE username = ?", (username,))
 
 
 def fetch_student_notes(username: str) -> List[Dict[str, str]]:
@@ -220,52 +213,28 @@ def add_student_note(username: str, title: str, uploaded_file) -> Optional[str]:
     file_bytes = uploaded_file.getvalue()
     if not file_bytes:
         return "Uploaded file is empty."
-
-    conn = get_connection()
     try:
+        conn = get_connection()
         with conn:
             conn.execute(
-                """
-                INSERT INTO student_notes (student_username, title, file_name, mime_type, data)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    username,
-                    title,
-                    uploaded_file.name,
-                    uploaded_file.type or "application/octet-stream",
-                    file_bytes,
-                ),
+                "INSERT INTO student_notes (student_username, title, file_name, mime_type, data) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (username, title, uploaded_file.name, uploaded_file.type or "application/octet-stream", file_bytes),
             )
         return None
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
         return str(exc)
 
 
 def delete_student_note(note_id: int) -> Optional[str]:
-    conn = get_connection()
-    try:
-        with conn:
-            conn.execute("DELETE FROM student_notes WHERE id = ?", (note_id,))
-        return None
-    except Exception as exc:  # pragma: no cover - defensive
-        return str(exc)
+    return safe_db_execute("DELETE FROM student_notes WHERE id = ?", (note_id,))
 
 
 def mark_attendance(username: str, attendance_date: str, status: str) -> Optional[str]:
-    conn = get_connection()
-    try:
-        with conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO attendance (student_username, attendance_date, status)
-                VALUES (?, ?, ?)
-                """,
-                (username, attendance_date, status),
-            )
-        return None
-    except Exception as exc:  # pragma: no cover - defensive
-        return str(exc)
+    return safe_db_execute(
+        "INSERT OR REPLACE INTO attendance (student_username, attendance_date, status) VALUES (?, ?, ?)",
+        (username, attendance_date, status)
+    )
 
 
 def fetch_attendance(username: str) -> List[Dict[str, str]]:
@@ -298,23 +267,15 @@ def get_attendance_status(username: str, attendance_date: str) -> Optional[str]:
 def authenticate_admin(username: str, password: str) -> Optional[str]:
     conn = get_connection()
     row = conn.execute(
-        """
-        SELECT full_name
-        FROM admins
-        WHERE username = ? AND password = ?
-        """,
+        "SELECT full_name FROM admins WHERE username = ? AND password = ?",
         (username, password),
     ).fetchone()
-    if row:
-        return row["full_name"]
-    return None
+    return row["full_name"] if row else None
 
 
 def authenticate_student(username: str, password: str) -> Optional[Dict[str, str]]:
     record = fetch_student(username)
-    if record and record["password"] == password:
-        return record
-    return None
+    return record if record and record["password"] == password else None
 
 
 def inject_custom_css() -> None:
@@ -346,18 +307,14 @@ def inject_custom_css() -> None:
 
 def init_state() -> None:
     init_db()
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-    if "role" not in st.session_state:
-        st.session_state.role = None
-    if "current_user" not in st.session_state:
-        st.session_state.current_user = None
+    defaults = {"authenticated": False, "role": None, "current_user": None}
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
 
 
 def logout() -> None:
-    st.session_state.authenticated = False
-    st.session_state.role = None
-    st.session_state.current_user = None
+    for key in ["authenticated", "role", "current_user"]:
+        st.session_state[key] = None if key != "authenticated" else False
     st.rerun()
 
 
@@ -371,26 +328,26 @@ def render_login() -> None:
         password = st.text_input("Password", type="password", placeholder="Enter your password")
         submitted = st.form_submit_button("Log In")
 
-    if submitted:
-        admin_name = authenticate_admin(username, password)
-        if admin_name:
-            st.session_state.authenticated = True
-            st.session_state.role = "admin"
-            st.session_state.current_user = admin_name
-            st.success(f"Welcome back, {admin_name}!")
-            st.rerun()
-            return
+    if not submitted:
+        return
 
-        student_record = authenticate_student(username, password)
-        if student_record:
-            st.session_state.authenticated = True
-            st.session_state.role = "student"
-            st.session_state.current_user = username
-            st.success(f"Welcome back, {student_record['full_name']}!")
-            st.rerun()
-            return
+    # Try admin authentication
+    admin_name = authenticate_admin(username, password)
+    if admin_name:
+        st.session_state.update({"authenticated": True, "role": "admin", "current_user": admin_name})
+        st.success(f"Welcome back, {admin_name}!")
+        st.rerun()
+        return
 
-        st.error("Invalid username or password. Please try again.")
+    # Try student authentication
+    student_record = authenticate_student(username, password)
+    if student_record:
+        st.session_state.update({"authenticated": True, "role": "student", "current_user": username})
+        st.success(f"Welcome back, {student_record['full_name']}!")
+        st.rerun()
+        return
+
+    st.error("Invalid username or password. Please try again.")
 
 
 def render_admin_dashboard() -> None:
@@ -500,80 +457,84 @@ def render_admin_dashboard() -> None:
 
     with notes_tab:
         st.subheader("Academic Notes Library")
+        st.info("📌 Notes uploaded here will be visible to students in their 'Academic Documents' section.")
         students = fetch_students()
+        
         if not students:
             st.info("Add students first to manage their academic notes.")
         else:
-            usernames = [student["username"] for student in students]
-            selected_username = st.selectbox(
-                "Choose a student",
-                usernames,
-                key="notes_student_select",
-            )
-            if selected_username:
-                selected_student = fetch_student(selected_username)
-                if not selected_student:
-                    st.error("Unable to load that student record.")
-                else:
-                    st.markdown(
-                        f"**{selected_student['full_name']}** &middot; {selected_student['program']}",
-                        unsafe_allow_html=True,
-                    )
-
-                    note_title = st.text_input(
-                        "Note Title",
-                        value="",
-                        placeholder="e.g. Midterm Review Packet",
-                        key=f"note_title_{selected_username}",
-                    )
-                    uploaded_note = st.file_uploader(
-                        "Upload Note File",
-                        type=["pdf", "doc", "docx", "txt", "png", "jpg", "jpeg"],
-                        key=f"note_uploader_{selected_username}",
-                    )
-                    if st.button(
-                        "Upload Academic Note", key=f"upload_note_btn_{selected_username}", type="primary"
-                    ):
+            # Upload section
+            upload_mode = st.radio("Upload Mode", 
+                ["Upload for All Students", "Upload for Specific Student"],
+                key="notes_upload_mode", horizontal=True)
+            
+            note_title = st.text_input("Note Title", 
+                placeholder="e.g. Midterm Review Packet, Course Syllabus", key="note_title_general")
+            uploaded_note = st.file_uploader("Upload Note File",
+                type=["pdf", "doc", "docx", "txt", "png", "jpg", "jpeg"], key="note_uploader_general")
+            
+            # Upload for all or specific student
+            if upload_mode == "Upload for All Students":
+                if st.button("Upload Academic Note for All Students", type="primary", key="upload_all_btn"):
+                    if not uploaded_note:
+                        st.error("Please choose a file before uploading.")
+                    else:
+                        title_to_use = note_title.strip() or uploaded_note.name
+                        success, error = 0, 0
+                        for student in students:
+                            uploaded_note.seek(0)
+                            if add_student_note(student["username"], title_to_use, uploaded_note):
+                                error += 1
+                            else:
+                                success += 1
+                        
+                        msg = f"Academic note uploaded for all {success} students!" if error == 0 else f"Uploaded for {success} students, {error} failed."
+                        (st.success if error == 0 else st.warning)(msg)
+                        st.rerun()
+            else:
+                selected_username = st.selectbox("Choose a student",
+                    [s["username"] for s in students], key="notes_student_select")
+                
+                if selected_username and (selected_student := fetch_student(selected_username)):
+                    st.markdown(f"**{selected_student['full_name']}** &middot; {selected_student['program']}", 
+                        unsafe_allow_html=True)
+                    if st.button("Upload Academic Note", key=f"upload_note_btn_{selected_username}", type="primary"):
                         if not uploaded_note:
                             st.error("Please choose a file before uploading.")
                         else:
                             title_to_use = note_title.strip() or uploaded_note.name
                             error = add_student_note(selected_username, title_to_use, uploaded_note)
-                            if error:
-                                st.error(f"Could not upload note: {error}")
-                            else:
-                                st.success("Academic note uploaded successfully.")
-                                st.rerun()
-
-                    attachments = fetch_student_notes(selected_username)
-                    if attachments:
-                        st.write("#### Existing Notes")
-                        for note in attachments:
-                            col_info, col_actions = st.columns([4, 1])
-                            with col_info:
-                                st.write(f"**{note['title']}**")
-                                st.caption(f"Uploaded: {note['uploaded_at']}")
-                            with col_actions:
-                                st.download_button(
-                                    "Download",
-                                    data=note["data"],
-                                    file_name=note["file_name"],
-                                    mime=note["mime_type"],
-                                    key=f"download_note_{note['id']}",
-                                )
-                                if st.button(
-                                    "Delete",
-                                    key=f"delete_note_{note['id']}",
-                                    help="Remove this note",
-                                ):
-                                    error = delete_student_note(note["id"])
-                                    if error:
-                                        st.error(f"Could not delete note: {error}")
-                                    else:
-                                        st.warning("Note deleted.")
-                                        st.rerun()
-                    else:
-                        st.info("No uploaded notes for this student yet.")
+                            (st.error(f"Could not upload note: {error}") if error else 
+                             (st.success("Academic note uploaded successfully."), st.rerun()))
+            
+            # View notes section
+            st.divider()
+            st.write("### View Student Notes")
+            selected_username_view = st.selectbox("Choose a student to view their notes",
+                [s["username"] for s in students], key="notes_view_student_select")
+            
+            if selected_username_view and (selected_student_view := fetch_student(selected_username_view)):
+                st.markdown(f"**{selected_student_view['full_name']}** &middot; {selected_student_view['program']}", 
+                    unsafe_allow_html=True)
+                attachments = fetch_student_notes(selected_username_view)
+                
+                if attachments:
+                    st.write(f"#### Existing Notes ({len(attachments)} total)")
+                    for note in attachments:
+                        col_info, col_actions = st.columns([4, 1])
+                        with col_info:
+                            st.write(f"**{note['title']}**")
+                            st.caption(f"Uploaded: {note['uploaded_at']}")
+                        with col_actions:
+                            st.download_button("Download", data=note["data"],
+                                file_name=note["file_name"], mime=note["mime_type"],
+                                key=f"download_note_{note['id']}")
+                            if st.button("Delete", key=f"delete_note_{note['id']}", help="Remove this note"):
+                                error = delete_student_note(note["id"])
+                                (st.error(f"Could not delete note: {error}") if error else 
+                                 (st.warning("Note deleted."), st.rerun()))
+                else:
+                    st.info("No uploaded notes for this student yet.")
 
     st.divider()
     if st.button("Log Out"):
@@ -582,24 +543,17 @@ def render_admin_dashboard() -> None:
 
 def render_attendance_calendar(username: str, year: int, month: int) -> None:
     """Render a calendar showing attendance for the given month."""
-    # Get attendance records for the month
     attendance_records = fetch_attendance(username)
     attendance_dict = {record["attendance_date"]: record["status"] for record in attendance_records}
     
-    # Create calendar
-    calendar_obj = cal.Calendar()
-    month_days = calendar_obj.monthdayscalendar(year, month)
-    
-    # Month header
-    month_name = cal.month_name[month]
-    st.markdown(f"### 📅 Attendance Calendar - {month_name} {year}")
+    month_days = cal.Calendar().monthdayscalendar(year, month)
+    st.markdown(f"### 📅 Attendance Calendar - {cal.month_name[month]} {year}")
     
     # Day headers
-    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     cols = st.columns(7)
-    for idx, day in enumerate(day_names):
+    for idx, day_name in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
         with cols[idx]:
-            st.markdown(f"**{day}**")
+            st.markdown(f"**{day_name}**")
     
     # Calendar days
     for week in month_days:
@@ -610,54 +564,25 @@ def render_attendance_calendar(username: str, year: int, month: int) -> None:
                     st.markdown("<div style='height: 60px;'></div>", unsafe_allow_html=True)
                 else:
                     date_str = f"{year}-{month:02d}-{day:02d}"
-                    status = attendance_dict.get(date_str)
+                    status = attendance_dict.get(date_str, "unmarked")
+                    colors = ATTENDANCE_COLORS.get(status, ATTENDANCE_COLORS["unmarked"])
                     
-                    # Determine color based on status
-                    if status == "present":
-                        color = "#22c55e"  # Green
-                        icon = "✓"
-                        label = "P"
-                    elif status == "absent":
-                        color = "#ef4444"  # Red
-                        icon = "✗"
-                        label = "A"
-                    else:
-                        color = "#e5e7eb"  # Gray
-                        icon = ""
-                        label = ""
-                    
-                    # Render day box
-                    st.markdown(
-                        f"""
-                        <div style='
-                            background-color: {color};
-                            border-radius: 8px;
-                            padding: 10px;
-                            text-align: center;
-                            height: 60px;
-                            display: flex;
-                            flex-direction: column;
-                            justify-content: center;
-                            align-items: center;
-                            color: {"white" if status else "#6b7280"};
-                            font-weight: bold;
-                        '>
+                    st.markdown(f"""
+                        <div style='background-color: {colors["bg"]}; border-radius: 8px; padding: 10px;
+                            text-align: center; height: 60px; display: flex; flex-direction: column;
+                            justify-content: center; align-items: center;
+                            color: {"white" if status != "unmarked" else "#6b7280"}; font-weight: bold;'>
                             <div style='font-size: 16px;'>{day}</div>
-                            <div style='font-size: 12px;'>{label}</div>
+                            <div style='font-size: 12px;'>{colors["label"]}</div>
                         </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                        """, unsafe_allow_html=True)
     
     # Legend
     st.markdown("---")
     legend_cols = st.columns(3)
-    with legend_cols[0]:
-        st.markdown("🟢 **Present**")
-    with legend_cols[1]:
-        st.markdown("🔴 **Absent**")
-    with legend_cols[2]:
-        st.markdown("⚪ **Not Marked**")
+    for idx, (label, emoji) in enumerate([("Present", "🟢"), ("Absent", "🔴"), ("Not Marked", "⚪")]):
+        with legend_cols[idx]:
+            st.markdown(f"{emoji} **{label}**")
 
 
 def render_student_dashboard(username: str) -> None:
@@ -720,53 +645,38 @@ def render_student_dashboard(username: str) -> None:
                     st.success("Contact information updated.")
                     st.rerun()
 
-        st.write("### Academic Notes")
-        if record.get("notes"):
-            st.info(record["notes"])
-        else:
-            st.write("No notes on file.")
-
     # Attendance Tab
     with attendance_tab:
         st.subheader("Mark Your Attendance")
         
-        # Get today's date
         today = date.today()
         today_str = today.strftime("%Y-%m-%d")
-        
-        # Check if already marked today
         today_status = get_attendance_status(username, today_str)
         
         col1, col2, col3 = st.columns([1, 1, 2])
         
-        with col1:
-            if st.button("✓ Mark Present", type="primary", use_container_width=True, disabled=today_status is not None):
-                error = mark_attendance(username, today_str, "present")
-                if error:
-                    st.error(f"Could not mark attendance: {error}")
-                else:
-                    st.success("✓ Marked as Present!")
-                    st.rerun()
+        # Mark Present/Absent buttons
+        for col, (status_type, label, btn_type) in zip([col1, col2], 
+                [("present", "✓ Mark Present", "primary"), ("absent", "✗ Mark Absent", "secondary")]):
+            with col:
+                if st.button(label, type=btn_type, use_container_width=True, disabled=today_status is not None):
+                    error = mark_attendance(username, today_str, status_type)
+                    if error:
+                        st.error(f"Could not mark attendance: {error}")
+                    else:
+                        (st.success if status_type == "present" else st.warning)(f"{label.split()[0]} Marked!")
+                        st.rerun()
         
-        with col2:
-            if st.button("✗ Mark Absent", use_container_width=True, disabled=today_status is not None):
-                error = mark_attendance(username, today_str, "absent")
-                if error:
-                    st.error(f"Could not mark attendance: {error}")
-                else:
-                    st.warning("✗ Marked as Absent!")
-                    st.rerun()
-        
+        # Display today's status
         with col3:
             if today_status:
-                status_display = "Present ✓" if today_status == "present" else "Absent ✗"
-                color = "green" if today_status == "present" else "red"
+                colors = ATTENDANCE_COLORS[today_status]
+                status_display = f"{today_status.title()} {colors['icon']}"
                 st.markdown(
-                    f"<div style='padding: 10px; background-color: {'#d1fae5' if today_status == 'present' else '#fee2e2'}; "
-                    f"border-radius: 8px; text-align: center; font-weight: bold; color: {color};'>"
-                    f"Today's Status: {status_display}</div>",
-                    unsafe_allow_html=True
-                )
+                    f"<div style='padding: 10px; background-color: {colors['light_bg']}; "
+                    f"border-radius: 8px; text-align: center; font-weight: bold; "
+                    f"color: {'green' if today_status == 'present' else 'red'};'>"
+                    f"Today's Status: {status_display}</div>", unsafe_allow_html=True)
             else:
                 st.info("You haven't marked attendance for today yet.")
         
@@ -776,51 +686,35 @@ def render_student_dashboard(username: str) -> None:
         attendance_records = fetch_attendance(username)
         if attendance_records:
             present_count = sum(1 for r in attendance_records if r["status"] == "present")
-            absent_count = sum(1 for r in attendance_records if r["status"] == "absent")
             total_count = len(attendance_records)
-            
             attendance_percentage = (present_count / total_count * 100) if total_count > 0 else 0
             
-            stat_cols = st.columns(4)
-            with stat_cols[0]:
-                st.metric("Total Days", total_count)
-            with stat_cols[1]:
-                st.metric("Present", present_count, delta=None)
-            with stat_cols[2]:
-                st.metric("Absent", absent_count, delta=None)
-            with stat_cols[3]:
-                st.metric("Attendance %", f"{attendance_percentage:.1f}%")
+            for col, (label, value) in zip(st.columns(4), [
+                ("Total Days", total_count), ("Present", present_count),
+                ("Absent", total_count - present_count), ("Attendance %", f"{attendance_percentage:.1f}%")]):
+                with col:
+                    st.metric(label, value)
             
             st.markdown("---")
         
         # Calendar view
         st.subheader("Attendance Calendar")
-        
-        # Month selector
         cal_cols = st.columns([2, 2, 1])
-        with cal_cols[0]:
-            selected_month = st.selectbox(
-                "Month",
-                range(1, 13),
-                format_func=lambda x: cal.month_name[x],
-                index=today.month - 1,
-                key="attendance_month"
-            )
-        with cal_cols[1]:
-            selected_year = st.selectbox(
-                "Year",
-                range(today.year - 1, today.year + 2),
-                index=1,
-                key="attendance_year"
-            )
         
-        # Render calendar
+        with cal_cols[0]:
+            selected_month = st.selectbox("Month", range(1, 13),
+                format_func=lambda x: cal.month_name[x], index=today.month - 1, key="attendance_month")
+        with cal_cols[1]:
+            selected_year = st.selectbox("Year", range(today.year - 1, today.year + 2),
+                index=1, key="attendance_year")
+        
         render_attendance_calendar(username, selected_year, selected_month)
 
     # Documents Tab
     with notes_tab:
         st.subheader("Academic Documents")
         uploaded_notes = fetch_student_notes(username)
+        
         if uploaded_notes:
             for note in uploaded_notes:
                 col1, col2 = st.columns([4, 1])
@@ -828,14 +722,9 @@ def render_student_dashboard(username: str) -> None:
                     st.write(f"**{note['title']}**")
                     st.caption(f"Uploaded: {note['uploaded_at']}")
                 with col2:
-                    st.download_button(
-                        label="Download",
-                        data=note["data"],
-                        file_name=note["file_name"],
-                        mime=note["mime_type"],
-                        key=f"student_download_{note['id']}",
-                        use_container_width=True,
-                    )
+                    st.download_button("Download", data=note["data"], file_name=note["file_name"],
+                        mime=note["mime_type"], key=f"student_download_{note['id']}",
+                        use_container_width=True)
         else:
             st.info("No documents uploaded yet.")
 
